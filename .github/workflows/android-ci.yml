@@ -1,0 +1,285 @@
+# File: .github/workflows/android-ci.yml
+name: Android CI/CD
+
+# Trigger the workflow on push or pull request to main branch
+on:
+  push:
+    branches: [ main, develop ]
+    tags:
+      - 'v*'  # Trigger on version tags
+  pull_request:
+    branches: [ main ]
+
+# Environment variables
+env:
+  # Android SDK versions
+  ANDROID_COMPILE_SDK: "34"
+  ANDROID_BUILD_TOOLS: "34.0.0"
+  ANDROID_SDK_TOOLS: "9477386"
+
+jobs:
+  # Job 1: Lint Check
+  lint:
+    name: Lint Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout code from repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+      
+      # Step 2: Set up JDK 17 (required for latest Android)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+      
+      # Step 3: Grant execute permission for gradlew
+      - name: Grant Execute Permission for gradlew
+        run: chmod +x gradlew
+      
+      # Step 4: Run Lint
+      - name: Run Lint
+        run: ./gradlew lintDebug
+      
+      # Step 5: Upload Lint Results
+      - name: Upload Lint Results
+        uses: actions/upload-artifact@v3
+        if: always()  # Upload even if lint fails
+        with:
+          name: lint-results
+          path: app/build/reports/lint-results-debug.html
+
+  # Job 2: Unit Tests
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+      
+      # Step 3: Grant execute permission
+      - name: Grant Execute Permission for gradlew
+        run: chmod +x gradlew
+      
+      # Step 4: Run Unit Tests
+      - name: Run Unit Tests
+        run: ./gradlew test --stacktrace
+      
+      # Step 5: Upload Test Results
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: unit-test-results
+          path: app/build/reports/tests/testDebugUnitTest/
+
+  # Job 3: Build APK
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    needs: [lint, test]  # Only build if lint and tests pass
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Step 2: Set up JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+      
+      # Step 3: Set up Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      # Step 4: Grant execute permission
+      - name: Grant Execute Permission for gradlew
+        run: chmod +x gradlew
+      
+      # Step 5: Build Debug APK
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+      
+      # Step 6: Upload Debug APK
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+      
+      # Step 7: Build Release APK (only on tags)
+      - name: Build Release APK
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ./gradlew assembleRelease --stacktrace
+      
+      # Step 8: Upload Release APK
+      - name: Upload Release APK
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-apk
+          path: app/build/outputs/apk/release/app-release.apk
+
+  # Job 4: Create Release (only on version tags)
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      # Step 2: Download APKs
+      - name: Download Debug APK
+        uses: actions/download-artifact@v3
+        with:
+          name: debug-apk
+          path: ./artifacts
+      
+      - name: Download Release APK
+        uses: actions/download-artifact@v3
+        with:
+          name: release-apk
+          path: ./artifacts
+      
+      # Step 3: Create Release
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            ## True Scale Release
+            
+            ### What's New
+            - High-accuracy AR measurements
+            - Support for metric and imperial units
+            - Depth API integration for enhanced precision
+            
+            ### Installation
+            1. Download the APK file below
+            2. Enable "Install from Unknown Sources" in Android settings
+            3. Open the APK file to install
+            
+            ### Requirements
+            - Android 9.0 (API 28) or higher
+            - ARCore compatible device
+            
+            See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for more information.
+          draft: false
+          prerelease: false
+      
+      # Step 4: Upload Release Assets
+      - name: Upload Debug APK to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/app-debug.apk
+          asset_name: TrueScale-${{ github.ref_name }}-debug.apk
+          asset_content_type: application/vnd.android.package-archive
+      
+      - name: Upload Release APK to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/app-release.apk
+          asset_name: TrueScale-${{ github.ref_name }}-release.apk
+          asset_content_type: application/vnd.android.package-archive
+
+  # Job 5: Code Quality Analysis (Optional but recommended)
+  analyze:
+    name: Code Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for analysis
+      
+      # Step 2: Set up JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+      
+      # Step 3: Grant execute permission
+      - name: Grant Execute Permission for gradlew
+        run: chmod +x gradlew
+      
+      # Step 4: Run detekt (Kotlin static analysis)
+      - name: Run Detekt
+        run: |
+          # Add detekt plugin to build.gradle.kts first, then:
+          # ./gradlew detekt
+          echo "Detekt analysis would run here if configured"
+      
+      # Step 5: Check for security issues
+      - name: Security Check
+        run: |
+          # Check for hardcoded secrets
+          echo "Checking for hardcoded secrets..."
+          ! grep -r "api_key\|password\|secret" --include="*.kt" --include="*.java" --include="*.xml" .
+
+# Additional workflow for automated dependency updates
+# File: .github/workflows/dependency-update.yml
+name: Dependency Updates
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'  # Weekly on Monday
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-dependencies:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Update Dependencies
+        run: |
+          ./gradlew dependencyUpdates -Drevision=release
+      
+      # Create PR with updates if needed
+      # This would require additional setup with a bot token
