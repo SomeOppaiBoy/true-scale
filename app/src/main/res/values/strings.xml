@@ -1,3 +1,39 @@
 <resources>
     <string name="app_name">True Scale</string>
+
+    <!-- Measurement Fragment UI -->
+    <string name="tap_to_measure">Tap to measure</string>
+    <string name="metric">Metric</string>
+    <string name="imperial">Imperial</string>
+
+    <!-- Instructions -->
+    <string name="instruction_initializing">Initializing AR…</string>
+    <string name="instruction_move_slowly">Move device slowly to improve tracking</string>
+    <string name="instruction_tracking_stopped">AR tracking stopped - point at surfaces</string>
+    <string name="instruction_tap_first_point">Tap to place first point</string>
+    <string name="instruction_tap_second_point">Tap to place second point</string>
+    <string name="instruction_distance">Tap two points to measure distance</string>
+    <string name="instruction_height">Tap bottom then top to measure height</string>
+    <string name="instruction_area">Tap opposite corners to measure area</string>
+    <string name="instruction_volume">Tap opposite corners to measure volume</string>
+
+    <!-- Snackbars / Toasts -->
+    <string name="snackbar_wait_tracking">Wait for AR tracking to stabilize</string>
+    <string name="snackbar_low_quality">Low tracking quality - try again</string>
+    <string name="snackbar_measurement_complete">Measurement completed!</string>
+    <string name="snackbar_first_point">First point placed - tap for second point</string>
+    <string name="snackbar_no_surface">No surface detected - point at floor or table</string>
+    <string name="snackbar_measurement_failed">Measurement failed - try again</string>
+    <string name="snackbar_ar_ready">AR ready - scan surfaces to begin</string>
+    <string name="snackbar_measurements_cleared">Measurements cleared</string>
+
+    <!-- Error Messages -->
+    <string name="error_arcore_not_installed">ARCore not installed. Please install from Play Store.</string>
+    <string name="error_arcore_update_needed">ARCore needs update. Please update from Play Store.</string>
+    <string name="error_sdk_too_old">Android version too old for ARCore.</string>
+    <string name="error_device_not_compatible">Device not compatible with ARCore.</string>
+    <string name="error_ar_init_failed">AR initialization failed</string>
+    <string name="error_camera_permission_required">Camera permission required for AR. Exiting.</string>
+    <string name="error_camera_not_available">Camera not available. Exiting.</string>
+
 </resources>

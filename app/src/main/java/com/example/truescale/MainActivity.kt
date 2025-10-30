@@ -1,5 +1,5 @@
 // File: MainActivity.kt
-package com.truescale.app
+package com.example.truescale // <-- CORRECTED PACKAGE
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -18,14 +18,6 @@ import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException
 import com.google.ar.core.exceptions.UnavailableException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 
-/**
- * MainActivity - The main entry point for True Scale AR measurement app
- *
- * This activity manages:
- * - Camera permissions
- * - ARCore availability checks
- * - Fragment hosting for MeasurementFragment
- */
 class MainActivity : AppCompatActivity() {
 
     companion object {
@@ -35,7 +27,6 @@ class MainActivity : AppCompatActivity() {
 
     private var measurementFragment: MeasurementFragment? = null
 
-    // Permission launcher for camera access
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -55,91 +46,76 @@ class MainActivity : AppCompatActivity() {
         }
         setContentView(container)
 
-        // Set up action bar
         supportActionBar?.apply {
             title = "True Scale"
             subtitle = "AR Measurement Tool"
         }
 
-        // Check camera permission first
         checkCameraPermission()
     }
 
-    /**
-     * Check camera permission and request if needed
-     */
     private fun checkCameraPermission() {
         when {
             ContextCompat.checkSelfPermission(
                 this, CAMERA_PERMISSION
             ) == PackageManager.PERMISSION_GRANTED -> {
-                // Permission granted, check ARCore and load fragment
                 checkArCoreAndLoadFragment()
             }
             shouldShowRequestPermissionRationale(CAMERA_PERMISSION) -> {
-                // Show rationale before requesting
                 showPermissionRationale()
             }
             else -> {
-                // Request permission directly
                 permissionLauncher.launch(CAMERA_PERMISSION)
             }
         }
     }
 
-    /**
-     * Check ARCore availability and load the measurement fragment
-     */
     private fun checkArCoreAndLoadFragment() {
         try {
+            Log.d(TAG, "Checking ARCore availability...")
             when (ArCoreApk.getInstance().requestInstall(this, true)) {
                 ArCoreApk.InstallStatus.INSTALLED -> {
-                    // ARCore is available, load fragment
+                    Log.d(TAG, "ARCore is installed, loading fragment...")
                     loadMeasurementFragment()
                     Log.d(TAG, "ARCore available, fragment loaded")
                 }
                 ArCoreApk.InstallStatus.INSTALL_REQUESTED -> {
-                    // ARCore installation requested
                     Log.d(TAG, "ARCore installation requested")
-                    // Fragment will be loaded after installation completes
                 }
             }
         } catch (e: UnavailableException) {
+            Log.e(TAG, "ARCore exception occurred", e)
             handleArCoreException(e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected exception during ARCore check", e)
+            showArCoreError("Unexpected error: ${e.message}")
         }
     }
 
-    /**
-     * Load the measurement fragment into the container
-     */
     private fun loadMeasurementFragment() {
-        if (measurementFragment == null) {
-            measurementFragment = MeasurementFragment()
+        try {
+            Log.d(TAG, "Loading MeasurementFragment...")
+            if (measurementFragment == null) {
+                measurementFragment = MeasurementFragment()
 
-            supportFragmentManager.commit {
-                setReorderingAllowed(true)
-                replace(android.R.id.content, measurementFragment!!)
+                supportFragmentManager.commit {
+                    setReorderingAllowed(true)
+                    replace(android.R.id.content, measurementFragment!!)
+                }
+                Log.d(TAG, "MeasurementFragment loaded successfully")
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading MeasurementFragment", e)
+            showArCoreError("Failed to load measurement interface: ${e.message}")
         }
     }
 
-    /**
-     * Handle different ARCore exceptions
-     */
     private fun handleArCoreException(e: UnavailableException) {
         val message = when (e) {
-            is UnavailableArcoreNotInstalledException -> {
-                "ARCore is required but not installed. Please install ARCore from Google Play Store."
-            }
-            is UnavailableApkTooOldException -> {
-                "ARCore version is too old. Please update ARCore from Google Play Store."
-            }
-            is UnavailableSdkTooOldException -> {
-                "Android version is too old for ARCore. Android 7.0 or newer is required."
-            }
-            is UnavailableDeviceNotCompatibleException -> {
-                "This device is not compatible with ARCore."
-            }
+            is UnavailableArcoreNotInstalledException -> "ARCore is required but not installed."
+            is UnavailableApkTooOldException -> "ARCore version is too old. Please update ARCore."
+            is UnavailableSdkTooOldException -> "Android version is too old for ARCore."
+            is UnavailableDeviceNotCompatibleException -> "This device is not compatible with ARCore."
             else -> "ARCore is unavailable: ${e.message}"
         }
 
@@ -147,11 +123,10 @@ class MainActivity : AppCompatActivity() {
         showArCoreError(message)
     }
 
-    // Dialog methods
     private fun showPermissionRationale() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Camera Permission Required")
-            .setMessage("True Scale needs camera access to measure distances using Augmented Reality. This allows the app to overlay measurement information on your camera view.")
+            .setMessage("True Scale needs camera access to measure distances using Augmented Reality.")
             .setPositiveButton("Grant Permission") { _, _ ->
                 permissionLauncher.launch(CAMERA_PERMISSION)
             }
@@ -186,8 +161,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-
-        // If we don't have a fragment yet and we should have one, check again
         if (measurementFragment == null &&
             ContextCompat.checkSelfPermission(this, CAMERA_PERMISSION)
             == PackageManager.PERMISSION_GRANTED) {
@@ -201,21 +174,6 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        // Forward permission results to fragment if it exists
         measurementFragment?.onRequestPermissionsResult(requestCode, permissions, grantResults)
-    }
-
-    // Handle back press
-    override fun onBackPressed() {
-        // Check if fragment wants to handle back press first
-        val fragment = measurementFragment
-        if (fragment?.isVisible == true) {
-            // You could add custom back handling in fragment if needed
-            // For now, use default behavior
-            super.onBackPressed()
-        } else {
-            super.onBackPressed()
-        }
     }
 }
