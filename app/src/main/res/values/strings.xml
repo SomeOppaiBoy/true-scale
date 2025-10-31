@@ -35,5 +35,6 @@
     <string name="error_ar_init_failed">AR initialization failed</string>
     <string name="error_camera_permission_required">Camera permission required for AR. Exiting.</string>
     <string name="error_camera_not_available">Camera not available. Exiting.</string>
+    <string name="error_storage_permission_required">Storage permission is required to save screenshots.</string>
 
 </resources>

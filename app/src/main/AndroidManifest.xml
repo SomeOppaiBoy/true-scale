@@ -5,6 +5,9 @@
     <!-- Camera permission for AR -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Storage permission for saving screenshots -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
     <!-- Network permissions required for ARCore Cloud Anchors and related services -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

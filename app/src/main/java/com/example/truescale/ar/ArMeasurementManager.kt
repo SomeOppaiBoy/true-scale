@@ -6,11 +6,6 @@ import com.example.truescale.utils.Vector3
 import kotlin.math.pow
 import kotlin.math.sqrt
 
-/**
- * ArMeasurementManager - Manages AR session and measurement anchors
- *
- * Encapsulates ARCore session so external classes don’t access it directly.
- */
 class ArMeasurementManager(private val session: Session) {
 
     companion object {
@@ -24,10 +19,8 @@ class ArMeasurementManager(private val session: Session) {
     var currentTrackingState: TrackingState = TrackingState.STOPPED
         private set
 
-    // --- NEW: Property to hold the last valid frame ---
     var currentFrame: Frame? = null
         private set
-    // -------------------------------------------------
 
     val isDepthAvailable: Boolean
         get() = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
@@ -39,43 +32,36 @@ class ArMeasurementManager(private val session: Session) {
         val timestamp: Long = System.currentTimeMillis()
     )
 
-    /** ✅ Encapsulated method */
     fun onSurfaceChanged(rotation: Int, width: Int, height: Int) {
-        // This function now receives the correct rotation from MeasurementFragment
         session.setDisplayGeometry(rotation, width, height)
     }
 
-    // --- MODIFIED: update() now caches the frame ---
     fun update(): Frame? {
         return try {
             val frame = session.update()
             currentTrackingState = frame.camera.trackingState
-            currentFrame = frame // <-- Cache the frame
+            currentFrame = frame
             frame
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update AR session", e)
-            currentFrame = null // <-- Clear cache on error
+            currentFrame = null
             null
         }
     }
-    // -----------------------------------------------
 
     fun createMeasurementAnchor(hit: HitResult, confidence: Float = 1.0f): MeasurementPoint? {
         return try {
-            // Enhanced validation for better accuracy
             if (anchors.size >= MAX_ANCHORS) {
                 Log.w(TAG, "Maximum anchor limit reached, removing oldest")
                 removeOldestAnchor()
             }
             
-            // Check if hit is on a valid trackable
             val trackable = hit.trackable
             if (trackable.trackingState != TrackingState.TRACKING) {
                 Log.w(TAG, "Trackable not in tracking state: ${trackable.trackingState}")
                 return null
             }
             
-            // Enhanced confidence calculation
             val enhancedConfidence = calculateEnhancedConfidence(hit)
             if (enhancedConfidence < 0.3f) {
                 Log.w(TAG, "Confidence too low for measurement: $enhancedConfidence")
@@ -101,14 +87,11 @@ class ArMeasurementManager(private val session: Session) {
     private fun calculateEnhancedConfidence(hit: HitResult): Float {
         var confidence = 0.5f
         
-        // Base confidence from tracking state
         if (currentTrackingState == TrackingState.TRACKING) confidence += 0.3f
         
-        // Higher confidence for planes vs points
         when (val trackable = hit.trackable) {
             is Plane -> {
                 confidence += 0.4f
-                // Additional confidence for horizontal planes (floors, tables)
                 if (trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
                     confidence += 0.2f
                 }
@@ -118,10 +101,8 @@ class ArMeasurementManager(private val session: Session) {
             }
         }
         
-        // Depth availability bonus
         if (isDepthAvailable) confidence += 0.1f
         
-        // Distance from camera (closer = more accurate)
         val cameraPose = currentFrame?.camera?.pose
         if (cameraPose != null) {
             val hitPose = hit.hitPose
@@ -130,7 +111,6 @@ class ArMeasurementManager(private val session: Session) {
             val dz = hitPose.tz() - cameraPose.tz()
             val distance = sqrt(dx * dx + dy * dy + dz * dz)
             
-            // Closer distances get higher confidence (up to 2 meters)
             if (distance < 2.0f) {
                 confidence += (2.0f - distance) * 0.1f
             }
@@ -181,14 +161,12 @@ class ArMeasurementManager(private val session: Session) {
     fun getDetectedPlanes(): Collection<Plane> {
         val allPlanes = session.getAllTrackables(Plane::class.java)
         
-        // Filter and prioritize planes for better quality
         return allPlanes.filter { plane ->
             plane.trackingState == TrackingState.TRACKING &&
-            plane.subsumedBy == null && // Only top-level planes
-            plane.extentX > 0.1f && // Minimum size threshold
+            plane.subsumedBy == null &&
+            plane.extentX > 0.1f &&
             plane.extentZ > 0.1f
         }.sortedByDescending { plane ->
-            // Prioritize by size and type
             val sizeScore = plane.extentX * plane.extentZ
             val typeScore = when (plane.type) {
                 Plane.Type.HORIZONTAL_UPWARD_FACING -> 3.0f

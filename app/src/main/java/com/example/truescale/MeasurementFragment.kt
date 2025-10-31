@@ -1,70 +1,83 @@
-// File: MeasurementFragment.kt
-package com.example.truescale // Correct package declaration
+package com.example.truescale
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.hardware.display.DisplayManager
+import android.net.Uri
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.Observer
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.snackbar.Snackbar
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
-// --- Ensure ONLY correct package imports are used ---
+import com.example.truescale.ar.ArLightingManager
 import com.example.truescale.ar.ArMeasurementManager
 import com.example.truescale.ar.MeasurementRenderer
+import com.example.truescale.ar.SurfaceRegistration
+import com.example.truescale.utils.CompassManager
+import com.example.truescale.utils.CompassView
 import com.example.truescale.utils.MeasurementUtils
 import com.example.truescale.utils.Units
 import com.example.truescale.utils.Vector3
 import com.example.truescale.viewmodel.MeasurementViewModel
-// --- Import the R class for resources ---
-import com.example.truescale.R // <--- THIS IS CRITICAL
+import com.example.truescale.R
+import kotlinx.coroutines.launch
+import java.io.OutputStream
+import kotlin.math.atan2
+import kotlin.math.roundToInt
 
-// Dummy Calculations class needed by pasted code - REPLACE if you have real one
 object Calculations {
     fun calculateDistanceToPlane(pose1: Pose, pose2: Pose): Float { return 1.0f }
 }
-
 
 class MeasurementFragment : Fragment() {
 
     companion object {
         private const val TAG = "MeasurementFragment"
         private const val CAMERA_PERMISSION_CODE = 1001
+        private const val STORAGE_PERMISSION_CODE = 1002
     }
 
-    // AR Components
     private var arSession: Session? = null
     private var arManager: ArMeasurementManager? = null
     private var renderer: MeasurementRenderer? = null
+    private var lightingManager: ArLightingManager? = null
 
-    // UI Components
     private lateinit var arSurfaceView: GLSurfaceView
     private lateinit var measurementText: TextView
     private lateinit var instructionText: TextView
     private lateinit var unitToggleButton: Button
     private lateinit var clearButton: FloatingActionButton
     private lateinit var modeButton: Button
+    private lateinit var compassView: CompassView
+    private lateinit var saveButton: FloatingActionButton
 
-    // ViewModel
     private val viewModel: MeasurementViewModel by viewModels()
 
-    // --- Display listener for orientation ---
     private lateinit var displayManager: DisplayManager
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
@@ -73,9 +86,9 @@ class MeasurementFragment : Fragment() {
             updateArSessionDisplayGeometry()
         }
     }
-    // -------------------------------------------
 
-    // Touch handling
+    private lateinit var compassManager: CompassManager
+
     private var lastTouchTime: Long = 0
     private val touchThrottleMs = 300L
 
@@ -84,7 +97,6 @@ class MeasurementFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View? {
-        // Use the imported R class
         return inflater.inflate(R.layout.fragment_measurement, container, false)
     }
 
@@ -100,13 +112,14 @@ class MeasurementFragment : Fragment() {
     }
 
     private fun initializeViews(view: View) {
-        // Use the imported R class for IDs
         arSurfaceView = view.findViewById(R.id.arSurfaceView)
         measurementText = view.findViewById(R.id.measurementText)
         instructionText = view.findViewById(R.id.instructionText)
         unitToggleButton = view.findViewById(R.id.unitToggleButton)
         clearButton = view.findViewById(R.id.clearButton)
         modeButton = view.findViewById(R.id.modeButton)
+        compassView = view.findViewById(R.id.compassView)
+        saveButton = view.findViewById(R.id.saveButton)
 
         arSurfaceView.setOnTouchListener { _, event -> handleTouch(event) }
 
@@ -115,11 +128,12 @@ class MeasurementFragment : Fragment() {
         clearButton.setOnClickListener {
             viewModel.clearMeasurements()
             renderer?.clearMeasurements()
-            // Use string resource via R class
             showSnackbar(getString(R.string.snackbar_measurements_cleared))
         }
 
         modeButton.setOnClickListener { cycleMode() }
+
+        saveButton.setOnClickListener { saveMeasurementScreenshot() }
     }
 
     private fun setupObservers() {
@@ -131,12 +145,12 @@ class MeasurementFragment : Fragment() {
                 measurementText.text = formattedDistance
                 renderer?.addMeasurementLine(it.startPoint, it.endPoint, it.confidence)
             } ?: run {
-                measurementText.text = getString(R.string.tap_to_measure) // Use string resource
+                measurementText.text = getString(R.string.tap_to_measure)
             }
         })
 
         viewModel.useMetric.observe(viewLifecycleOwner, Observer { useMetric ->
-            unitToggleButton.text = if (useMetric) getString(R.string.metric) else getString(R.string.imperial) // Use string resources
+            unitToggleButton.text = if (useMetric) getString(R.string.metric) else getString(R.string.imperial)
             viewModel.currentMeasurement.value?.let { measurement ->
                 val distance = MeasurementUtils.calculateDistance(measurement.startPoint, measurement.endPoint)
                 val formattedDistance = if (useMetric) Units.formatMetric(distance) else Units.formatImperial(distance)
@@ -150,8 +164,7 @@ class MeasurementFragment : Fragment() {
         })
 
         viewModel.trackingState.observe(viewLifecycleOwner, Observer { state ->
-            // Use local context safely
-            val safeContext = context ?: return@Observer // Exit if context is null
+            val safeContext = context ?: return@Observer
             val (textResId, colorResId) = when (state) {
                 TrackingState.TRACKING -> {
                     if (viewModel.isMeasuring()) R.string.instruction_tap_second_point to android.R.color.holo_green_light
@@ -184,8 +197,8 @@ class MeasurementFragment : Fragment() {
             else -> "Initializing AR..."
         }
         instructionText.text = instruction
+        compassView.update(compassManager.headingFlow.replayCache.lastOrNull() ?: 0f, getCameraPitchDegrees())
         
-        // Update instruction color based on tracking quality
         val color = when (trackingState) {
             TrackingState.TRACKING -> android.graphics.Color.WHITE
             TrackingState.PAUSED -> android.graphics.Color.YELLOW
@@ -193,6 +206,13 @@ class MeasurementFragment : Fragment() {
             else -> android.graphics.Color.GRAY
         }
         instructionText.setTextColor(color)
+    }
+
+    private fun getCameraPitchDegrees(): Float {
+        val frame = arManager?.currentFrame ?: return 0f
+        val rotation = frame.camera.displayOrientedPose.rotationQuaternion
+        val pitch = -Math.toDegrees(atan2(2.0 * (rotation[1] * rotation[2] + rotation[0] * rotation[3]), (rotation[0] * rotation[0] + rotation[1] * rotation[1] - rotation[2] * rotation[2] - rotation[3] * rotation[3]).toDouble())).toFloat()
+        return pitch
     }
 
     private fun cycleMode() {
@@ -208,7 +228,6 @@ class MeasurementFragment : Fragment() {
             if (currentTime - lastTouchTime < touchThrottleMs) return true
             lastTouchTime = currentTime
             
-            // Add haptic feedback for better user experience
             view?.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
             
             performHitTest(event.x, event.y)
@@ -221,73 +240,64 @@ class MeasurementFragment : Fragment() {
         val frame = manager.currentFrame ?: return
 
         if (frame.camera.trackingState != TrackingState.TRACKING) {
-            showSnackbar(getString(R.string.snackbar_wait_tracking)) // Use string resource
+            showSnackbar(getString(R.string.snackbar_wait_tracking))
             return
         }
 
         viewModel.updateTrackingState(frame.camera.trackingState)
 
         try {
-            val hits = frame.hitTest(x, y)
-            
-            // Enhanced hit test logic with better filtering
-            val validHits = hits.filter { hit ->
-                val trackable = hit.trackable
-                when (trackable) {
-                    is Plane -> {
-                        trackable.trackingState == TrackingState.TRACKING &&
-                        trackable.isPoseInPolygon(hit.hitPose) &&
-                        trackable.subsumedBy == null && // Only top-level planes
-                        trackable.extentX > 0.1f && trackable.extentZ > 0.1f // Minimum size
-                    }
-                    is Point -> {
-                        trackable.trackingState == TrackingState.TRACKING &&
-                        trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                    }
-                    else -> false
-                }
-            }
-            
-            // Sort by confidence and distance for best hit selection
-            val bestHit = validHits.maxByOrNull { hit ->
-                val confidence = manager.calculateMeasurementConfidence(frame, hit)
-                val distance = calculateDistanceToCamera(frame, hit.hitPose)
-                confidence * (1.0f / (1.0f + distance)) // Closer hits get higher score
-            }
-
-            bestHit?.let { validHit ->
+            val result = SurfaceRegistration.tryRegister(frame, x, y)
+            if (result.success) {
+                val validHit = result.hit!!
                 val confidence = manager.calculateMeasurementConfidence(frame, validHit)
-                if (confidence < 0.3f) { // Lowered threshold for better usability
+                if (confidence < 0.3f) {
                     showSnackbar("Low tracking quality - try moving closer or improving lighting")
                     return
                 }
 
-                val anchor = validHit.createAnchor() // Create anchor from the valid hit
+                val anchor = validHit.createAnchor()
                 val pose = validHit.hitPose
                 val point = Vector3(pose.tx(), pose.ty(), pose.tz())
 
                 if (viewModel.isMeasuring()) {
-                    viewModel.setEndPoint(point, anchor) // Pass anchor
+                    viewModel.setEndPoint(point, anchor)
                     MeasurementUtils.clearHistory()
-                    showSnackbar(getString(R.string.snackbar_measurement_complete)) // Use string resource
+                    showSnackbar(getString(R.string.snackbar_measurement_complete))
                 } else {
-                    viewModel.setStartPoint(point, anchor) // Pass anchor
-                    showSnackbar(getString(R.string.snackbar_first_point)) // Use string resource
+                    viewModel.setStartPoint(point, anchor)
+                    showSnackbar(getString(R.string.snackbar_first_point))
                 }
-            } ?: run {
-                showSnackbar(getString(R.string.snackbar_no_surface)) // Use string resource
+            } else {
+                showSnackbar(result.message ?: getString(R.string.snackbar_no_surface))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Hit test failed", e)
-            showSnackbar(getString(R.string.snackbar_measurement_failed)) // Use string resource
+            showSnackbar(getString(R.string.snackbar_measurement_failed))
         }
+    }
+
+    private fun onFrame() {
+        if (viewModel.isMeasuring()) {
+            val frame = arManager?.currentFrame ?: return
+            val startPoint = viewModel.currentMeasurement.value?.startPoint ?: return
+
+            val width = arSurfaceView.width
+            val height = arSurfaceView.height
+            val result = SurfaceRegistration.tryRegister(frame, width / 2f, height / 2f)
+
+            if (result.success) {
+                val endPoint = Vector3(result.hit!!.hitPose.tx(), result.hit.hitPose.ty(), result.hit.hitPose.tz())
+                renderer?.updatePreviewLine(startPoint, endPoint)
+            }
+        }
+        arManager?.currentFrame?.let { lightingManager?.update(it) }
     }
 
 
     private fun initializeAR() {
         if (arSession != null) return
 
-        // Use safe context access
         val safeContext = context ?: run {
             Log.e(TAG, "Cannot initialize AR: Context is null")
             return
@@ -296,36 +306,30 @@ class MeasurementFragment : Fragment() {
         try {
             arSession = Session(safeContext).also { session ->
                 val config = Config(session).apply {
-                    // Enhanced depth mode for better accuracy
                     depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         Config.DepthMode.AUTOMATIC
                     } else {
                         Config.DepthMode.DISABLED
                     }
                     
-                    // Enhanced plane detection for all surfaces
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     
-                    // Better focus mode for accuracy
-                    focusMode = Config.FocusMode.AUTO
+                    focusMode = Config.FocusMode.FIXED
                     
-                    // Enable instant placement for better tracking
-                    instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
+                    instantPlacementMode = Config.InstantPlacementMode.DISABLED
                     
-                    // Enable cloud anchors for better tracking persistence
-                    cloudAnchorMode = Config.CloudAnchorMode.ENABLED
+                    cloudAnchorMode = Config.CloudAnchorMode.DISABLED
                     
-                    // Enable light estimation for better lighting tolerance
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
                     
-                    // Enable semantic understanding for better surface detection
                     semanticMode = Config.SemanticMode.ENABLED
                 }
                 session.configure(config)
                 arManager = ArMeasurementManager(session)
+                lightingManager = ArLightingManager()
             }
 
-            renderer = MeasurementRenderer(safeContext, arManager!!)
+            renderer = MeasurementRenderer(safeContext, arManager!!, ::onFrame)
 
             arSurfaceView.apply {
                 preserveEGLContextOnPause = true
@@ -335,9 +339,15 @@ class MeasurementFragment : Fragment() {
                 renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             }
 
-            // Reset retry count and set up camera texture for AR session
             retryCount = 0
             setupCameraTexture()
+
+            compassManager = CompassManager(safeContext)
+            lifecycleScope.launch {
+                compassManager.headingFlow.collect { heading ->
+                    compassView.update(heading, getCameraPitchDegrees())
+                }
+            }
 
             Log.d(TAG, "AR initialized successfully. Depth Mode: ${arSession?.config?.depthMode}")
             showSnackbar(getString(R.string.snackbar_ar_ready))
@@ -349,7 +359,6 @@ class MeasurementFragment : Fragment() {
     }
 
     private fun handleArInitializationError(e: Exception) {
-        // Use safe context access
         val safeContext = context ?: return
         val messageResId = when (e) {
             is UnavailableArcoreNotInstalledException -> R.string.error_arcore_not_installed
@@ -365,15 +374,41 @@ class MeasurementFragment : Fragment() {
 
 
     private fun hasCameraPermission(): Boolean {
-        // Use safe context access
         val safeContext = context ?: return false
         return ContextCompat.checkSelfPermission(safeContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestCameraPermission() {
-        // Use safe activity access
         activity?.let {
             ActivityCompat.requestPermissions(it, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_CODE)
+        }
+    }
+
+    private fun hasStoragePermission(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return true
+        }
+        val safeContext = context ?: return false
+        return ContextCompat.checkSelfPermission(safeContext, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestStoragePermission() {
+        val activity = activity ?: return
+        if (ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+            AlertDialog.Builder(requireContext())
+                .setTitle("Storage Permission Required")
+                .setMessage("This app needs storage access to save measurement screenshots to your gallery.")
+                .setPositiveButton("OK") { _, _ ->
+                    ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), STORAGE_PERMISSION_CODE)
+                }
+                .setNegativeButton("Cancel") { dialog, _ ->
+                    dialog.dismiss()
+                    showError(getString(R.string.error_storage_permission_required))
+                }
+                .create()
+                .show()
+        } else {
+            ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), STORAGE_PERMISSION_CODE)
         }
     }
 
@@ -382,7 +417,7 @@ class MeasurementFragment : Fragment() {
         permissions: Array<out String>,
         grantResults: IntArray
     ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults) // Important to call super
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == CAMERA_PERMISSION_CODE) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 initializeAR()
@@ -391,16 +426,22 @@ class MeasurementFragment : Fragment() {
                 activity?.finish()
             }
         }
+        if (requestCode == STORAGE_PERMISSION_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                saveMeasurementScreenshot()
+            } else {
+                showError(getString(R.string.error_storage_permission_required))
+            }
+        }
     }
 
 
     private fun updateArSessionDisplayGeometry() {
-        // Use safe activity and view access
         val currentActivity = activity ?: return
         if (!::arSurfaceView.isInitialized || arSurfaceView.width == 0 || arSurfaceView.height == 0) return
 
         try {
-            val display = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 currentActivity.display
             } else {
                 @Suppress("DEPRECATION")
@@ -421,19 +462,15 @@ class MeasurementFragment : Fragment() {
 
     private fun setupCameraTexture() {
         try {
-            // Wait for the renderer to be initialized
             renderer?.let { renderer ->
-                // Get the background renderer's texture ID
                 val backgroundRenderer = renderer.getBackgroundRenderer()
                 val textureId = backgroundRenderer?.textureId
                 
                 if (textureId != null && textureId != -1) {
-                    // Set the camera texture for the AR session
                     arSession?.setCameraTextureNames(intArrayOf(textureId))
                     Log.d(TAG, "Camera texture set up successfully with ID: $textureId")
                 } else {
                     Log.w(TAG, "Background renderer texture not ready yet, retrying...")
-                    // Retry after a short delay, but limit retries
                     if (retryCount < 10) {
                         retryCount++
                         arSurfaceView.postDelayed({
@@ -459,95 +496,113 @@ class MeasurementFragment : Fragment() {
         return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
     }
 
+    private fun saveMeasurementScreenshot() {
+        if (!hasStoragePermission()) {
+            requestStoragePermission()
+            return
+        }
+
+        val view = requireView()
+        val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        view.draw(canvas)
+
+        try {
+            val resolver = requireContext().contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "Measurement_${System.currentTimeMillis()}.jpg")
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+                }
+            }
+
+            val uri: Uri? = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            uri?.let {
+                val outputStream: OutputStream? = resolver.openOutputStream(it)
+                outputStream?.let {
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it)
+                    it.close()
+                    showSnackbar("Screenshot saved to gallery")
+                }
+            }
+        } catch (e: Exception) {
+            showError("Failed to save screenshot: ${e.message}")
+        }
+    }
+
 
     override fun onResume() {
         super.onResume()
         if (!hasCameraPermission()) {
             Log.w(TAG, "Camera permission not granted onResume, requesting again or exiting.")
-            // Maybe request again, or show rationale, or finish
-            // requestCameraPermission() // Option: Request again
-            // activity?.finish() // Option: Exit
-            return // Do not proceed without permission
+            return
         }
 
-        // Use safe context and view access
         val safeContext = context ?: return
         if (!::arSurfaceView.isInitialized) return
 
         try {
             if (arSession == null) {
-                initializeAR() // Initialize if needed
+                initializeAR()
             }
-            // Resume session only if initialized successfully
             if (arSession != null) {
-                // Ensure camera texture is set before resuming the session
                 setupCameraTexture()
                 arSession?.resume()
                 arSurfaceView.onResume()
+                compassManager.start()
 
-                // Register display listener
                 displayManager = safeContext.getSystemService(DisplayManager::class.java)
                 displayManager.registerDisplayListener(displayListener, null)
-                updateArSessionDisplayGeometry() // Update geometry on resume
+                updateArSessionDisplayGeometry()
                 
-                // Set up camera texture after resume
                 setupCameraTexture()
                 
                 Log.d(TAG, "AR Resumed")
             } else {
                 Log.e(TAG, "AR Session was null onResume, initialization might have failed.")
-                // Maybe attempt re-initialization or show error
-                // initializeAR() // Option: Try again
-                // showError("Failed to resume AR.") // Option: Show error
             }
 
         } catch (e: CameraNotAvailableException) {
-            Log.e(TAG, "Camera not available on resume", e)
             showError(getString(R.string.error_camera_not_available))
             activity?.finish()
         } catch (e: Exception) {
-            Log.e(TAG, "Error resuming AR session", e)
-            showError("Error resuming AR: ${e.message}")
-            // Consider finishing if resume fails critically
-            // activity?.finish()
+            showError("Error resuming AR session: ${e.message}")
         }
     }
 
     override fun onPause() {
         super.onPause()
         Log.d(TAG, "AR Pausing...")
-        // Use safe context and view access
         if (::displayManager.isInitialized) {
             displayManager.unregisterDisplayListener(displayListener)
         }
-        // Check if view is initialized before accessing
         if (::arSurfaceView.isInitialized) {
             arSurfaceView.onPause()
         }
         arSession?.pause()
+        if (::compassManager.isInitialized) {
+            compassManager.stop()
+        }
         Log.d(TAG, "AR Paused")
     }
 
-    // Changed onDestroy to onDestroyView for Fragments
     override fun onDestroyView() {
         super.onDestroyView()
         Log.d(TAG, "AR Destroying View...")
         
-        // Clean up renderer resources
         renderer?.cleanup()
         
-        // Close session safely
         arSession?.close()
         arSession = null
         arManager?.dispose()
         arManager = null
-        renderer = null // Allow GC
+        renderer = null
         Log.d(TAG, "AR View Destroyed")
     }
 
 
     private fun showError(message: String) {
-        // Use safe context access
         context?.let {
             Toast.makeText(it, message, Toast.LENGTH_LONG).show()
         }
@@ -555,10 +610,12 @@ class MeasurementFragment : Fragment() {
     }
 
     private fun showSnackbar(message: String) {
-        // Check if view is available
         view?.let {
-            Snackbar.make(it, message, Snackbar.LENGTH_SHORT).show()
+            val snackbar = Snackbar.make(it, message, Snackbar.LENGTH_SHORT)
+            val view = snackbar.view
+            val textView = view.findViewById<TextView>(com.google.android.material.R.id.snackbar_text)
+            textView.setPadding(32, 0, 32, 0)
+            snackbar.show()
         }
     }
 }
-
